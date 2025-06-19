@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
-import ytdl from '@distube/ytdl-core';
+import play from 'play-dl';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -324,21 +324,72 @@ const formatText = async (text) => {
 // ROTAS DA API
 // =============================================
 
-// Rota para transcrever YouTube
+// Rota para transcrever YouTube com play-dl
 app.post('/api/transcribe-youtube', async (req, res) => {
   let audioPath = null;
   let convertedPath = null;
 
   try {
-    const { url, language, shouldTranslate = false, shouldFormat = false } = req.body;
-    
-    if (!ytdl.validateURL(url)) {
+    const { url, language } = req.body;
+
+    // Validar URL com play-dl
+    const validation = await play.validate(url);
+    if (validation !== 'yt_video') {
       return res.status(400).json({ 
-        error: 'URL do YouTube inválida' 
+        error: 'URL do YouTube inválida ou não suportada' 
       });
     }
 
-    console.log('Processando YouTube:', url);
+    console.log('Processando YouTube com play-dl:', url);
+
+    // Baixar áudio do YouTube
+    audioPath = `temp_youtube_${Date.now()}.webm`;
+    convertedPath = `temp_youtube_${Date.now()}.wav`;
+
+    // Obter informações e a stream do áudio
+    const stream = await play.stream(url, {
+      discordPlayerCompatibility: true // Opção que ajuda na estabilidade
+    });
+
+    const writeStream = fs.createWriteStream(audioPath);
+    stream.stream.pipe(writeStream);
+
+    await new Promise((resolve, reject) => {
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      stream.stream.on('error', reject);
+    });
+
+    console.log('Áudio baixado, convertendo...');
+
+    // Converter para áudio compatível
+    await convertVideoToAudio(audioPath, convertedPath);
+
+    // Transcrever com AssemblyAI
+    const transcriptionOptions = {};
+    if (language && language !== 'auto') {
+      transcriptionOptions.language = language;
+    }
+
+    const result = await transcribeAudio(convertedPath, transcriptionOptions);
+
+    res.json({ 
+      transcription: result.text,
+      confidence: result.confidence,
+      language_detected: result.language_code
+    });
+
+  } catch (error) {
+    console.error('Erro YouTube:', error);
+    res.status(500).json({ 
+      error: 'Erro ao processar vídeo do YouTube: ' + error.message 
+    });
+  } finally {
+    // Limpar arquivos temporários
+    cleanupFile(audioPath);
+    cleanupFile(convertedPath);
+  }
+});
     
     // Baixar áudio do YouTube
     audioPath = `temp_youtube_${Date.now()}.webm`;
